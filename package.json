@@ -1,0 +1,24 @@
+{
+  "name": "demo-timeskipping-cba",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Temporal TypeScript workflows for timer, Activity, and Signal demos",
+  "scripts": {
+    "build": "tsc",
+    "worker": "npm run build && node lib/worker.js",
+    "requests": "node lib/requests.js",
+    "approve": "npm run build && node lib/approve.js"
+  },
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "dependencies": {
+    "@temporalio/client": "1.25.0",
+    "@temporalio/worker": "1.25.0",
+    "@temporalio/workflow": "1.25.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
