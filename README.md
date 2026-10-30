@@ -14,13 +14,22 @@ These two Workflows are expected to be started by Schedules:
 
 #### **Step1: build CLI commands, start local server and worker**
 
+Download **Source code (zip)** or **Source code (tar.gz)** from the Assets section of
+the [v1.9.4-time-skipping pre-release](https://github.com/temporalio/cli/releases/tag/v1.9.4-time-skipping)
+and extract it. In the build command below, replace `/path/to/the/extracted-CLI-source`
+with the extracted directory.
+
+All CLI examples below use `/tmp/temporal-ts`, the pre-release CLI binary built
+from source in this step. Use this path for both server and client commands.
+This keeps your existing `temporal` command unchanged and requires no PATH setup.
+
 ```bash
-# build local commands
-cd /path/to/the/feature-specific-CLI-repo
-go build -o /tmp/temporal-vts ./cmd/temporal
+# build the pre-release CLI
+cd /path/to/the/extracted-CLI-source
+go build -o /tmp/temporal-ts ./cmd/temporal
 
 # start local server with time skipping
-/tmp/temporal-vts server start-dev \
+/tmp/temporal-ts server start-dev \
   --namespace timeskipping-test \
   --enable-time-skipping
 ```
@@ -39,9 +48,9 @@ npm run worker
 ```bash
 # create the weekly schedule and check upcoming runs in the UI
 
-SCHEDULE_ID=cba-weekly-skip-month
+SCHEDULE_ID=cba-weekly-skip
 
-/tmp/temporal-vts schedule create \
+/tmp/temporal-ts schedule create \
   --namespace timeskipping-test \
   --schedule-id "$SCHEDULE_ID" \
   --interval 7d \
@@ -53,7 +62,7 @@ SCHEDULE_ID=cba-weekly-skip-month
 
 ```bash
 # fast-forward by 30days
-/tmp/temporal-vts schedule time-skipping enable \
+/tmp/temporal-ts schedule time-skipping enable \
   --namespace timeskipping-test \
   --schedule-id "$SCHEDULE_ID" \
   --fast-forward-duration 30d \
@@ -62,14 +71,14 @@ SCHEDULE_ID=cba-weekly-skip-month
 # check in UI
  
 # optional: poll until time skipping completes
-/tmp/temporal-vts schedule time-skipping poll \
+/tmp/temporal-ts schedule time-skipping poll \
   --namespace timeskipping-test \
   --schedule-id "$SCHEDULE_ID" \
   --fast-forward-id "${SCHEDULE_ID}-30d" \
   --command-timeout 30s
   
 # optional: inspect time skipping status
-/tmp/temporal-vts schedule describe \
+/tmp/temporal-ts schedule describe \
   --namespace timeskipping-test \
   --schedule-id "$SCHEDULE_ID" \
   --time-format iso
@@ -77,7 +86,7 @@ SCHEDULE_ID=cba-weekly-skip-month
 
 Expected runs to be found in UI, workflows started by default also have time-skipping enabled and completes fast
 
-!image.png
+![Weekly Schedule after a 30-day fast-forward, showing recent and upcoming runs](images/schedule-time-skipping-30d.png)
 
 #### **Step3: use time skipping on schedules (overlap-policy=allow-all) with workflow-2**
 
@@ -87,8 +96,18 @@ Expected runs to be found in UI, workflows started by default also have time-ski
 # with "allow-all", the second workflow can be started with the first one still running
 
 SCHEDULE_ID="cba-weekly-allow-all"
+SCHEDULE_FAST_FORWARD_ID="${SCHEDULE_ID}-15d"
 
-/tmp/temporal-vts schedule time-skipping enable \
+/tmp/temporal-ts schedule create \
+  --namespace timeskipping-test \
+  --schedule-id "$SCHEDULE_ID" \
+  --interval 7d \
+  --overlap-policy AllowAll \
+  --workflow-id cba-weekly-approval \
+  --type workflowWaitOnSignalAndTimer \
+  --task-queue timeskipping-cba
+
+/tmp/temporal-ts schedule time-skipping enable \
   --namespace timeskipping-test \
   --schedule-id "$SCHEDULE_ID" \
   --fast-forward-duration 15d \
@@ -96,7 +115,7 @@ SCHEDULE_ID="cba-weekly-allow-all"
   --disable-propagation
   
 # list running workflows and paste the worklfow ID
-/tmp/temporal-vts workflow list \
+/tmp/temporal-ts workflow list \
   --namespace timeskipping-test \
   --query "TemporalScheduledById = 'cba-weekly-allow-all' AND ExecutionStatus = 'Running'"
 ```
@@ -108,23 +127,25 @@ How to use time skipping on workflows:
 # the workflow is waiting on the signal.
 
 # 1) we skip the timer before the signal:
-/tmp/temporal-vts workflow time-skipping enable \
+/tmp/temporal-ts workflow time-skipping enable \
   --namespace timeskipping-test \
   --workflow-id "$WORKFLOW_ID" \
   --fast-forward-duration 2h \
   --fast-forward-id "${WORKFLOW_ID}-before-signal"
 
 # Optionally poll the fast-forward result
-/tmp/temporal-vts workflow time-skipping poll \
+/tmp/temporal-ts workflow time-skipping poll \
   --namespace timeskipping-test \
   --workflow-id "$WORKFLOW_ID" \
   --fast-forward-id "${WORKFLOW_ID}-before-signal"
 
 # 2) send an approve signal to the workflow
+# Run this command from the same demo directory used to start the Worker.
+cd /path/to/demo-timeskipping-cba
 npm run approve -- "$WORKFLOW_ID"
 
 # 3）enable time skipping for the workflow to run to completion
-/tmp/temporal-vts workflow time-skipping enable \
+/tmp/temporal-ts workflow time-skipping enable \
   --namespace timeskipping-test \
   --workflow-id "$WORKFLOW_ID"
   
@@ -135,3 +156,8 @@ npm run approve -- "$WORKFLOW_ID"
 # this workflow will end in a state that no one "approves" it.
 
 ```
+
+## Schedule overlap policies and time skipping
+
+- **AllowAll:** The Schedule can continue skipping time after starting a Workflow, without waiting for it to complete. A successful Schedule fast-forward poll does not mean that the Workflows it started have completed.
+- **All other overlap policies, including Skip:** The Schedule waits for in-flight Workflows to complete before continuing to skip time.
