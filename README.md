@@ -1,11 +1,13 @@
 ## Workflow and Schedules Prepared For Testing
 
-Two example workflows are provided in the demo project written in TypeScript:
+Three example workflows are provided in the demo project written in TypeScript:
 
 - **Workflow 1 — `workflowWithActivityAndTimer`** is a simple workflow with activities and user timers. Simply enabling time skipping allows it to advance through its timers and run to completion.
 - **Workflow 2 — `workflowWaitOnSignalAndTimer`** represents a more complex Workflow that includes user timers, activities, and signals. It waits for a Signal with a timeout implemented as a user timer. We assume that the business flow requires the Signal to be sent only after the preceding user timers and Activities have completed.
 
-These two Workflows are expected to be started by Schedules: 
+- **Workflow 3 — `workflowWaitOnSignalWithoutTimeout`** waits indefinitely for a `complete` Signal, with no timers. Fast-forwarding one hour advances its virtual time and completes the fast-forward while the Workflow remains running.
+
+The first two Workflows are expected to be started by Schedules:
 
 - one weekly Schedule runs Workflow 1 with the **Skip** overlap policy
 - and another weekly Schedule runs Workflow 2 with the **AllowAll** overlap policy.
@@ -194,6 +196,165 @@ npm run approve -- "$WORKFLOW_ID"
 # this workflow will end in a state that no one "approves" it.
 
 ```
+
+#### **Step4: fast-forward a Workflow waiting for a Signal without a timeout**
+
+If the Worker is already running, stop it and run `npm run worker` again from the
+same demo directory to load the new Workflow. Keep the local server running.
+
+This Workflow has no user timers or Signal timeout. The start command also leaves
+Workflow Execution and Workflow Run timeouts unset. It waits for the `complete` Signal.
+
+This example checks whether a bounded fast-forward can complete while a Workflow
+waits indefinitely for external input. In our local test, the one-hour fast-forward
+completed and the Workflow continued waiting for the Signal. We did not reproduce
+the reported behavior where `HasCompleted` remains `false` indefinitely.
+
+**1. Start the Workflow and inspect it before fast-forwarding.**
+
+```bash
+WORKFLOW_ID="signal-without-timeout-$(date +%s)"
+FAST_FORWARD_ID="${WORKFLOW_ID}-1h"
+
+/tmp/temporal-ts workflow start \
+  --namespace timeskipping-test \
+  --workflow-id "$WORKFLOW_ID" \
+  --type workflowWaitOnSignalWithoutTimeout \
+  --task-queue timeskipping-schedules
+
+/tmp/temporal-ts workflow describe \
+  --namespace timeskipping-test \
+  --workflow-id "$WORKFLOW_ID" \
+  --time-format iso
+```
+
+The Workflow should be `RUNNING`, waiting for the Signal. Before enabling time
+skipping, there is no `Time Skipping` section. Note its `StartTime` for comparison.
+The timestamps below match the manual run shown in the screenshot. Your IDs and
+timestamps will differ. The one-hour duration is measured from the virtual time
+when fast-forwarding is enabled, rather than from the Workflow start time.
+
+```text
+Execution Info:
+  WorkflowId            <workflow-id>
+  Type                  workflowWaitOnSignalWithoutTimeout
+  StartTime             2026-11-17T02:23:24Z
+```
+
+**2. Fast-forward one hour.**
+
+```bash
+/tmp/temporal-ts workflow time-skipping enable \
+  --namespace timeskipping-test \
+  --workflow-id "$WORKFLOW_ID" \
+  --fast-forward-duration 1h \
+  --fast-forward-id "$FAST_FORWARD_ID"
+```
+
+Expected output:
+
+```text
+Workflow time skipping updated: <workflow-id>
+Time skipping: enabled
+Fast-forward ID: <fast-forward-id>
+```
+
+This confirms the configuration was accepted; it does not confirm that the
+fast-forward has completed.
+
+**3. Wait for the fast-forward to complete.**
+
+```bash
+/tmp/temporal-ts workflow time-skipping poll \
+  --namespace timeskipping-test \
+  --workflow-id "$WORKFLOW_ID" \
+  --fast-forward-id "$FAST_FORWARD_ID" \
+  --command-timeout 30s
+```
+
+Expected output (exit status `0`):
+
+```text
+completed
+```
+
+This means the virtual clock reached the fast-forward target, not that the Workflow
+completed or received a Signal. The Workflow should still be `RUNNING`.
+`--command-timeout` limits only the CLI's wait; it does not set a Workflow timeout.
+
+**4. Inspect the virtual time and fast-forward status.**
+
+```bash
+/tmp/temporal-ts workflow describe \
+  --namespace timeskipping-test \
+  --workflow-id "$WORKFLOW_ID" \
+  --time-format iso
+```
+
+Expected output excerpt:
+
+```text
+Time Skipping:
+  EffectiveEnabled         false
+  DisablePropagation       false
+  MaxSessionSkipCount      200
+  CurrentSessionSkipCount  1
+  CurrentTime              2026-11-17T03:24:16Z
+  FastForwardInfo          {"Id":"<fast-forward-id>","Duration":"1h 0m 0s","TargetTime":"2026-11-17T03:24:09.899667Z","HasCompleted":true}
+```
+
+Observed `workflow describe` output after polling completed, before sending the Signal:
+
+![Workflow describe after a one-hour fast-forward while waiting for a Signal, showing advanced CurrentTime and HasCompleted true](images/example-3-signal.jpg)
+
+- `HasCompleted: true` confirms the virtual clock reached the fast-forward target.
+  It describes the fast-forward operation, not Workflow completion.
+- `CurrentTime` is past `TargetTime`. After the jump, virtual time continues
+  advancing with wall-clock time while retaining the skipped hour; it does not
+  revert to the original wall-clock time.
+- `EffectiveEnabled: false` is expected because time skipping automatically turns
+  off after reaching this bounded target.
+- `CurrentSessionSkipCount: 1` records the single jump in this run.
+- The Workflow remains `RUNNING` until the Signal arrives. No Signal timeout can
+  fire because this Workflow has none.
+
+`--time-format iso` makes the time jump easier to inspect than relative phrases
+such as “1 hour from now.”
+
+**Comparing with the reported behavior**
+
+| Observation | Meaning |
+| --- | --- |
+| `FastForwardInfo` is populated | The fast-forward request was recorded; this alone does not confirm completion. |
+| `HasCompleted: true`, with `CurrentTime` at or past `TargetTime` | The fast-forward completed, even if the Workflow is still waiting for its Signal. |
+| `HasCompleted` stays `false`, with no jump to `TargetTime` | The fast-forward is still pending. This is different from the expected Signal wait and was not reproduced in this example. |
+
+If you observe the last case, capture the Server version, enable command, poll
+result, and describe output, and confirm that a Worker is polling this Workflow's
+task queue. A CLI poll timeout ends only that wait and does not mean the
+fast-forward completed or was canceled.
+
+**5. Optionally send the Signal to complete the Workflow.**
+
+```bash
+/tmp/temporal-ts workflow signal \
+  --namespace timeskipping-test \
+  --workflow-id "$WORKFLOW_ID" \
+  --name complete
+
+/tmp/temporal-ts workflow result \
+  --namespace timeskipping-test \
+  --workflow-id "$WORKFLOW_ID"
+```
+
+Expected Workflow result:
+
+```text
+"Complete Signal received"
+```
+
+The Workflow should now be `COMPLETED`. Advancing virtual time alone does not
+supply this external Signal or execute the code after the wait.
 
 ## Schedule overlap policies and time skipping
 

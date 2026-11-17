@@ -63,3 +63,16 @@ export async function workflowWaitOnSignalAndTimer({
   await sleep(request.postApprovalTimerMs);
   return `Approval ${request.requestId} recorded and final timer completed`;
 }
+
+export const completeSignal = defineSignal('complete');
+
+/** Wait for an external Signal without creating a timer. */
+export async function workflowWaitOnSignalWithoutTimeout(): Promise<string> {
+  let signalReceived = false;
+  setHandler(completeSignal, () => {
+    signalReceived = true;
+  });
+  log.info('Waiting for complete Signal without a timeout');
+  await condition(() => signalReceived);
+  return 'Complete Signal received';
+}
